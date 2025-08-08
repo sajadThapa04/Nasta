@@ -143,7 +143,7 @@ const registerUser = asyncHandler(async (req, res) => {
   }
 });
 
-const registerSocialUserByGoogle = async (req, res) => {
+const registerSocialUserByGoogle = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -319,10 +319,10 @@ const registerSocialUserByGoogle = async (req, res) => {
   } finally {
     session.endSession();
   }
-};
+});
 
 // Similarly modified Facebook registration function
-const registerSocialUserByFacebook = async (req, res) => {
+const registerSocialUserByFacebook = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -533,7 +533,7 @@ const registerSocialUserByFacebook = async (req, res) => {
   } finally {
     session.endSession();
   }
-};
+});
 
 // Login User
 const loginUser = asyncHandler(async (req, res) => {
@@ -603,37 +603,46 @@ const loginUser = asyncHandler(async (req, res) => {
 
 // Login social User by google and
 
-const loginSocialUser = async (req, res) => {
+const loginSocialUser = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const {provider, providerId} = req.socialUser;
+    console.log("🔐 Social login initiated");
 
-    // Find user by provider ID
+    const {provider, providerId} = req.socialUser;
+    console.log("👤 Provider:", provider);
+    console.log("🆔 Provider ID:", providerId);
+
+    // Build query
     const query = {};
     if (provider === "google") 
       query.googleId = providerId;
     if (provider === "facebook") 
       query.facebookId = providerId;
     
+    console.log("🔍 Querying user with:", query);
+
     const user = await User.findOne(query).session(session);
 
     if (!user) {
+      console.log("❌ User not found in DB");
       throw new ApiError(404, `No account found with this ${provider} login. Please register first.`);
     }
+
+    console.log("✅ User found:", user.email);
 
     // Generate tokens
     const accessToken = user.generateAccessToken();
     const refreshToken = user.generateRefreshToken();
 
-    // Update refresh token
+    // Save refresh token
     user.refreshToken = refreshToken;
     await user.save({session});
 
     await session.commitTransaction();
 
-    // Return response (same format as registration)
+    // Prepare cookie options
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -648,6 +657,8 @@ const loginSocialUser = async (req, res) => {
     delete userResponse.__v;
     delete userResponse.password;
 
+    console.log("✅ Login successful for:", user.email);
+
     return res.status(200).cookie("accessToken", accessToken, cookieOptions).cookie("refreshToken", refreshToken, cookieOptions).json(new ApiResponse(200, {
       user: userResponse,
       accessToken,
@@ -655,11 +666,13 @@ const loginSocialUser = async (req, res) => {
     }, `${provider} login successful`));
   } catch (error) {
     await session.abortTransaction();
-    throw error;
+    console.error("🔥 Social login failed:", error); // 👈 Catch and log any error
+    return res.status(500).json({message: "Social login error", error: error.message});
   } finally {
     session.endSession();
+    console.log("🧹 Session ended");
   }
-};
+});
 
 // Logout User
 const logoutUser = asyncHandler(async (req, res) => {
@@ -1237,6 +1250,7 @@ export {
   registerSocialUserByGoogle,
   registerSocialUserByFacebook,
   loginUser,
+  loginSocialUser,
   logoutUser,
   refreshAccessToken,
   verifyEmail,

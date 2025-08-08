@@ -4,6 +4,7 @@ import {
   registerSocialUserByGoogle,
   registerSocialUserByFacebook,
   loginUser,
+  loginSocialUser,
   logoutUser,
   refreshAccessToken,
   verifyEmail,
@@ -30,6 +31,10 @@ router.route("/register").post(authRateLimiter, registerUser); // Normal registr
 router.route("/register/social/google").post(authRateLimiter, verifyGoogleToken, registerSocialUserByGoogle); // Social registration
 router.route("/register/social/facebook").post(authRateLimiter, verifyFacebookToken, registerSocialUserByFacebook); // Social registration
 router.route("/login").post(authRateLimiter, loginUser); // Login user
+
+router.route("/login/social/google").post(authRateLimiter, verifyGoogleToken, loginSocialUser); // Social login
+router.route("/login/social/facebook").post(authRateLimiter, verifyFacebookToken, loginSocialUser); // Social login
+
 router.route("/verify-email/:token").get(authRateLimiter, verifyEmail); // Verify email with token
 router.route("/resend-verification").post(strictAuthRateLimiter, resendVerificationEmail); // Resend verification email
 router.route("/forgot-password").post(strictAuthRateLimiter, forgotPassword); // Request password reset
