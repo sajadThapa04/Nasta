@@ -1,7 +1,8 @@
 import {asyncHandler} from "../utils/asyncHandler.js";
 import {ApiError} from "../utils/ApiError.js";
 import {ApiResponse} from "../utils/ApiResponse.js";
-import BusinessOwner from "../models/businessOwner.model.js";
+import BusinessOwner from "../models/BusinessOwner.models.js";
+import {Service} from "../models/services.models.js";
 import {uploadOnCloudinary, deleteFromCloudinary} from "../utils/cloudinary.js";
 import logger from "../utils/logger.js";
 import mongoose from "mongoose";
@@ -33,6 +34,14 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
       paymentMethods
     } = req.body;
 
+    // Get admin ID from authenticated request (assuming it's stored in req.admin._id)
+    const adminId = req.admin
+      ?._id;
+
+    if (!adminId) {
+      throw new ApiError(401, "Admin authentication required");
+    }
+
     // Check required fields
     if (!businessName || !businessType || !contactEmail) {
       throw new ApiError(400, "Business name, type, and contact email are required");
@@ -44,8 +53,9 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
       throw new ApiError(409, "Business with this name already exists");
     }
 
-    // Create new business owner
+    // Create new business owner with admin reference
     const businessOwner = new BusinessOwner({
+      admin: adminId, // Add the admin who created this business
       businessName,
       businessType,
       description,
@@ -54,14 +64,16 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
       address: address || {},
       documents: {}, // Documents will be added via separate endpoint
       socialMedia: socialMedia || {},
-      businessHours: businessHours || {},
+      businessHours: businessHours || [],
       paymentMethods: paymentMethods || []
     });
 
     await businessOwner.save({session});
     await session.commitTransaction();
 
-    return res.status(201).json(new ApiResponse(201, businessOwner, "Business owner created successfully"));
+    const response = new ApiResponse(201, businessOwner, "Business owner created successfully");
+    logger.info(`Business owner created successfully - ID: ${businessOwner._id}, Name: ${businessOwner.businessName}`);
+    return res.status(201).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in createBusinessOwner: ${error.message}`, {stack: error.stack});
@@ -123,7 +135,9 @@ const getAllBusinessOwners = asyncHandler(async (req, res) => {
 
     const result = await BusinessOwner.paginate(query, options);
 
-    return res.status(200).json(new ApiResponse(200, result, "Business owners retrieved successfully"));
+    const response = new ApiResponse(200, result, "Business owners retrieved successfully");
+    logger.info(`Retrieved ${result.docs.length} business owners out of ${result.totalDocs}`);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(`Error in getAllBusinessOwners: ${error.message}`, {stack: error.stack});
     throw error;
@@ -144,7 +158,9 @@ const getBusinessOwnerById = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Business owner not found");
     }
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner retrieved successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner retrieved successfully");
+    logger.info(`Business owner retrieved - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(`Error in getBusinessOwnerById: ${error.message}`, {stack: error.stack});
     throw error;
@@ -164,7 +180,9 @@ const getBusinessOwnerBySlug = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Business owner not found");
     }
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner retrieved successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner retrieved successfully");
+    logger.info(`Business owner retrieved by slug - Slug: ${slug}, ID: ${businessOwner._id}`);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(`Error in getBusinessOwnerBySlug: ${error.message}`, {stack: error.stack});
     throw error;
@@ -208,7 +226,9 @@ const updateBusinessOwner = asyncHandler(async (req, res) => {
     await businessOwner.save({session});
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner updated successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner updated successfully");
+    logger.info(`Business owner updated - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in updateBusinessOwner: ${error.message}`, {stack: error.stack});
@@ -247,7 +267,9 @@ const updateBusinessOwnerStatus = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner status updated successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner status updated successfully");
+    logger.info(`Business owner status updated - ID: ${id}, New Status: ${status}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in updateBusinessOwnerStatus: ${error.message}`, {stack: error.stack});
@@ -283,7 +305,9 @@ const verifyBusinessOwner = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner verified successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner verified successfully");
+    logger.info(`Business owner verified - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in verifyBusinessOwner: ${error.message}`, {stack: error.stack});
@@ -323,7 +347,9 @@ const featureBusinessOwner = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Business owner featured successfully"));
+    const response = new ApiResponse(200, businessOwner, "Business owner featured successfully");
+    logger.info(`Business owner featured - ID: ${id}, Featured Until: ${featuredUntil}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in featureBusinessOwner: ${error.message}`, {stack: error.stack});
@@ -350,23 +376,65 @@ const deleteBusinessOwner = asyncHandler(async (req, res) => {
     }
 
     // Delete associated files from Cloudinary
+    const deletionPromises = [];
+
     if (businessOwner.logo) {
-      await deleteFromCloudinary(businessOwner.logo);
+      deletionPromises.push(deleteFromCloudinary(businessOwner.logo).then(result => {
+        if (result.result !== "ok") {
+          logger.warn(`Logo deletion result: ${result.result} for business ${id}`);
+        }
+      }));
     }
+
     if (businessOwner.coverPhoto) {
-      await deleteFromCloudinary(businessOwner.coverPhoto);
+      deletionPromises.push(deleteFromCloudinary(businessOwner.coverPhoto).then(result => {
+        if (result.result !== "ok") {
+          logger.warn(`Cover photo deletion result: ${result.result} for business ${id}`);
+        }
+      }));
     }
+
     for (const docType in businessOwner.documents) {
-      if (businessOwner.documents[docType]) {
-        await deleteFromCloudinary(businessOwner.documents[docType]);
+      const docValue = businessOwner.documents[docType];
+      if (typeof docValue === "string" && docValue.startsWith("http")) {
+        // Extract public_id from URL inline
+        const parts = docValue.split("/");
+        const filename = parts[parts.length - 1]; // e.g. image123.jpg
+        const publicId = filename.split(".")[0]; // remove extension
+
+        deletionPromises.push(deleteFromCloudinary(publicId).then(result => {
+          if (
+            result
+            ?.result !== "ok") {
+            logger.warn(
+              `Document ${docType} deletion result: ${result
+              ?.result} for business ${id}`);
+          }
+        }));
+      } else if (typeof docValue === "string" && docValue.trim()) {
+        // Assume this is a public ID already
+        deletionPromises.push(deleteFromCloudinary(docValue).then(result => {
+          if (
+            result
+            ?.result !== "ok") {
+            logger.warn(
+              `Document ${docType} deletion result: ${result
+              ?.result} for business ${id}`);
+          }
+        }));
       }
     }
+
+    // Wait for all deletions to complete (regardless of success)
+    await Promise.all(deletionPromises);
 
     // Delete the business owner
     await BusinessOwner.findByIdAndDelete(id).session(session);
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, null, "Business owner deleted successfully"));
+    const response = new ApiResponse(200, null, "Business owner deleted successfully");
+    logger.info(`Business owner deleted - ID: ${id}, Name: ${businessOwner.businessName}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in deleteBusinessOwner: ${error.message}`, {stack: error.stack});
@@ -411,7 +479,9 @@ const getNearbyBusinessOwners = asyncHandler(async (req, res) => {
 
     const businessOwners = await BusinessOwner.find(query).limit(50).populate("services");
 
-    return res.status(200).json(new ApiResponse(200, businessOwners, "Nearby business owners retrieved successfully"));
+    const response = new ApiResponse(200, businessOwners, "Nearby business owners retrieved successfully");
+    logger.info(`Retrieved ${businessOwners.length} nearby business owners`);
+    return res.status(200).json(response);
   } catch (error) {
     logger.error(`Error in getNearbyBusinessOwners: ${error.message}`, {stack: error.stack});
     throw error;
@@ -465,7 +535,9 @@ const uploadBusinessDocument = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, `${documentType} uploaded successfully`));
+    const response = new ApiResponse(200, businessOwner, `${documentType} uploaded successfully`);
+    logger.info(`Document uploaded for business owner - ID: ${id}, Type: ${documentType}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in uploadBusinessDocument: ${error.message}`, {stack: error.stack});
@@ -496,21 +568,57 @@ const deleteBusinessDocument = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Business owner not found");
     }
 
-    // Check if document exists
-    if (!businessOwner.documents[documentType]) {
+    const docValue = businessOwner.documents[documentType];
+    if (!docValue) {
       throw new ApiError(404, `${documentType} not found`);
     }
 
-    // Delete document from Cloudinary
-    await deleteFromCloudinary(businessOwner.documents[documentType]);
+    // Prepare array of deletion promises (just one here, but consistent with your style)
+    const deletionPromises = [];
 
-    // Remove document reference
+    if (typeof docValue === "string" && docValue.startsWith("http")) {
+      // Extract public_id from URL
+      const parts = docValue.split("/");
+      const filename = parts[parts.length - 1]; // e.g. image123.jpg
+      const publicId = filename.split(".")[0]; // remove extension
+
+      deletionPromises.push(deleteFromCloudinary(publicId).then(result => {
+        if (
+          result
+          ?.result !== "ok") {
+          logger.warn(
+            `Document ${documentType} deletion result: ${result
+            ?.result} for business ${id}`);
+        }
+      }));
+    } else if (typeof docValue === "string" && docValue.trim()) {
+      // Assume it is already a public ID
+      deletionPromises.push(deleteFromCloudinary(docValue).then(result => {
+        if (
+          result
+          ?.result !== "ok") {
+          logger.warn(
+            `Document ${documentType} deletion result: ${result
+            ?.result} for business ${id}`);
+        }
+      }));
+    } else {
+      // docValue is not a string or not in expected format
+      logger.warn(`Document ${documentType} for business ${id} has unexpected format`);
+    }
+
+    // Await deletion(s)
+    await Promise.all(deletionPromises);
+
+    // Remove the document reference and save
     businessOwner.documents[documentType] = undefined;
     await businessOwner.save({session});
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, `${documentType} deleted successfully`));
+    const response = new ApiResponse(200, businessOwner, `${documentType} deleted successfully`);
+    logger.info(`Document deleted for business owner - ID: ${id}, Type: ${documentType}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in deleteBusinessDocument: ${error.message}`, {stack: error.stack});
@@ -562,7 +670,9 @@ const uploadBusinessLogo = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Logo uploaded successfully"));
+    const response = new ApiResponse(200, businessOwner, "Logo uploaded successfully");
+    logger.info(`Logo uploaded for business owner - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in uploadBusinessLogo: ${error.message}`, {stack: error.stack});
@@ -603,7 +713,9 @@ const deleteBusinessLogo = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Logo deleted successfully"));
+    const response = new ApiResponse(200, businessOwner, "Logo deleted successfully");
+    logger.info(`Logo deleted for business owner - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in deleteBusinessLogo: ${error.message}`, {stack: error.stack});
@@ -655,7 +767,9 @@ const uploadBusinessCoverPhoto = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Cover photo uploaded successfully"));
+    const response = new ApiResponse(200, businessOwner, "Cover photo uploaded successfully");
+    logger.info(`Cover photo uploaded for business owner - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in uploadBusinessCoverPhoto: ${error.message}`, {stack: error.stack});
@@ -696,7 +810,9 @@ const deleteBusinessCoverPhoto = asyncHandler(async (req, res) => {
 
     await session.commitTransaction();
 
-    return res.status(200).json(new ApiResponse(200, businessOwner, "Cover photo deleted successfully"));
+    const response = new ApiResponse(200, businessOwner, "Cover photo deleted successfully");
+    logger.info(`Cover photo deleted for business owner - ID: ${id}`);
+    return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error in deleteBusinessCoverPhoto: ${error.message}`, {stack: error.stack});

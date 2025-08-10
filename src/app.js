@@ -24,9 +24,11 @@ app.use(express.static("public"));
 //importing router
 import userRouter from "./routes/user.routes.js";
 import adminRouter from "./routes/admin.routes.js";
+import businessOwnerRoutes from "./routes/businessOwner.routes.js";
 //initialising router
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/admin", adminRouter);
+app.use("/api/v1/business-owner", businessOwnerRoutes);
 
 
 // ✅ Global error handler

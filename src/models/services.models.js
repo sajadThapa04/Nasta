@@ -123,9 +123,9 @@ serviceSchema.pre("save", function (next) {
 });
 
 // Indexes to improve querying performance
-serviceSchema.index({owner: 1});
-serviceSchema.index({type: 1});
-serviceSchema.index({slug: 1});
+// serviceSchema.index({owner: 1});
+// serviceSchema.index({type: 1});
+// serviceSchema.index({slug: 1});
 
 serviceSchema.plugin(mongoosePaginate);
 

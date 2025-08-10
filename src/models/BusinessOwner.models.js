@@ -10,6 +10,11 @@ const businessOwnerSchema = new Schema({
   //     unique: true
   //   },
 
+  admin: {
+    type: Schema.Types.ObjectId,
+    ref: "Admin",
+    required: true
+  },
   // Business Information
   businessName: {
     type: String,
@@ -251,9 +256,9 @@ const businessOwnerSchema = new Schema({
 
 // Indexes
 businessOwnerSchema.index({"address.coordinates": "2dsphere"});
-businessOwnerSchema.index({businessSlug: 1});
-businessOwnerSchema.index({status: 1});
-businessOwnerSchema.index({businessType: 1});
+// businessOwnerSchema.index({businessSlug: 1});
+// businessOwnerSchema.index({status: 1});
+// businessOwnerSchema.index({businessType: 1});
 
 // Pre-save hook to generate slug
 businessOwnerSchema.pre("save", function (next) {
