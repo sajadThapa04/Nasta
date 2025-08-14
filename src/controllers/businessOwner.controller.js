@@ -21,6 +21,19 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
+  const allowedBusinessTypes = [
+    "restaurant",
+    "cafe",
+    "bar",
+    "bistro",
+    "liquor-store",
+    "hotel",
+    "lodge",
+    "home_stay",
+    "luxury_villa",
+    "other"
+  ];
+
   try {
     const {
       businessName,
@@ -34,7 +47,7 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
       paymentMethods
     } = req.body;
 
-    // Get admin ID from authenticated request (assuming it's stored in req.admin._id)
+    // Get admin ID from authenticated request
     const adminId = req.admin
       ?._id;
 
@@ -47,6 +60,11 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
       throw new ApiError(400, "Business name, type, and contact email are required");
     }
 
+    // Validate business type
+    if (!allowedBusinessTypes.includes(businessType)) {
+      throw new ApiError(400, `Invalid business type. Allowed types are: ${allowedBusinessTypes.join(", ")}`);
+    }
+
     // Check if business with same name already exists
     const existingBusiness = await BusinessOwner.findOne({businessName}).session(session);
     if (existingBusiness) {
@@ -55,14 +73,14 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
 
     // Create new business owner with admin reference
     const businessOwner = new BusinessOwner({
-      admin: adminId, // Add the admin who created this business
+      admin: adminId,
       businessName,
       businessType,
       description,
       contactEmail,
       phoneNumbers: phoneNumbers || [],
       address: address || {},
-      documents: {}, // Documents will be added via separate endpoint
+      documents: {},
       socialMedia: socialMedia || {},
       businessHours: businessHours || [],
       paymentMethods: paymentMethods || []
@@ -82,6 +100,7 @@ const createBusinessOwner = asyncHandler(async (req, res) => {
     session.endSession();
   }
 });
+
 
 // @desc    Get all business owners
 // @route   GET /api/business-owners
@@ -705,8 +724,23 @@ const deleteBusinessLogo = asyncHandler(async (req, res) => {
     }
 
     // Delete logo from Cloudinary
-    await deleteFromCloudinary(businessOwner.logo);
+    let publicId = businessOwner.logo;
+    if (publicId.startsWith("http")) {
+      const parts = publicId.split("/");
+      const filename = parts[parts.length - 1]; // e.g. image123.jpg
+      publicId = filename.split(".")[0]; // remove extension
+    }
 
+    // Delete logo from Cloudinary
+    // Delete cover photo from Cloudinary
+    const result = await deleteFromCloudinary(publicId);
+    if (
+      result
+      ?.result !== "ok") {
+      logger.warn(
+        `logo deletion result: ${result
+        ?.result} for business ${id}`);
+    }
     // Remove logo reference
     businessOwner.logo = undefined;
     await businessOwner.save({session});
@@ -801,9 +835,23 @@ const deleteBusinessCoverPhoto = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Cover photo not found");
     }
 
-    // Delete cover photo from Cloudinary
-    await deleteFromCloudinary(businessOwner.coverPhoto);
+    // Extract public_id if it's a URL
+    let publicId = businessOwner.coverPhoto;
+    if (typeof publicId === "string" && publicId.startsWith("http")) {
+      const parts = publicId.split("/");
+      const filename = parts[parts.length - 1]; // e.g. image123.jpg
+      publicId = filename.split(".")[0]; // remove extension
+    }
 
+    // Delete cover photo from Cloudinary
+    const result = await deleteFromCloudinary(publicId);
+    if (
+      result
+      ?.result !== "ok") {
+      logger.warn(
+        `Cover photo deletion result: ${result
+        ?.result} for business ${id}`);
+    }
     // Remove cover photo reference
     businessOwner.coverPhoto = undefined;
     await businessOwner.save({session});

@@ -25,10 +25,15 @@ app.use(express.static("public"));
 import userRouter from "./routes/user.routes.js";
 import adminRouter from "./routes/admin.routes.js";
 import businessOwnerRoutes from "./routes/businessOwner.routes.js";
+import servicesRoutes from "./routes/services.routes.js";
+import foodVenueRoutes from "./routes/foodVenue.routes.js";
+
 //initialising router
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/admin", adminRouter);
 app.use("/api/v1/business-owner", businessOwnerRoutes);
+app.use("/api/v1/services", servicesRoutes);
+app.use("/api/v1/foodVenues", foodVenueRoutes);
 
 
 // ✅ Global error handler

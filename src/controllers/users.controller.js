@@ -1173,9 +1173,26 @@ const deleteProfileImage = asyncHandler(async (req, res) => {
       throw new ApiError(400, "No profile image to delete");
     }
 
-    await deleteFromCloudinary(user.profileImage);
-    logger.info(`Profile image deleted from Cloudinary for user: ${user._id}`);
+    // Extract public_id from URL if necessary
+    let publicId = user.profileImage;
+    if (typeof publicId === "string" && publicId.startsWith("http")) {
+      const parts = publicId.split("/");
+      const filename = parts[parts.length - 1]; // e.g., abc123.jpg
+      publicId = filename.split(".")[0]; // e.g., abc123
+    }
 
+    const result = await deleteFromCloudinary(publicId);
+    if (
+      result
+      ?.result !== "ok") {
+      logger.warn(
+        `Profile image deletion result: ${result
+        ?.result} for user ${user._id}`);
+    } else {
+      logger.info(`Profile image deleted from Cloudinary for user: ${user._id}`);
+    }
+
+    // Reset to default profile image
     user.profileImage = "default-profile.png";
     await user.save({session});
 

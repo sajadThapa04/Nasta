@@ -81,9 +81,40 @@ const userSchema = new Schema({
     default: "default-profile.png"
   },
   address: {
-    country: String,
-    city: String,
-    street: String
+    country: {
+      type: String,
+      trim: true,
+      required: true
+    },
+    city: {
+      type: String,
+      trim: true,
+      required: true
+    },
+    street: {
+      type: String,
+      trim: true,
+      required: true
+    },
+    zipCode: {
+      type: String,
+      trim: true
+    },
+    coordinates: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point"
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        required: true,
+        validate: {
+          validator: coords => Array.isArray(coords) && coords.length === 2 && coords.every(c => typeof c === "number"),
+          message: "Coordinates must be an array of two numbers [longitude, latitude]."
+        }
+      }
+    }
   },
   status: {
     type: String,
@@ -196,6 +227,9 @@ userSchema.set("toJSON", {
     return ret;
   }
 });
+
+// Add 2dsphere index for geospatial queries
+userSchema.index({"address.coordinates": "2dsphere"});
 
 const User = mongoose.model("User", userSchema);
 
