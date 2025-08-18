@@ -13,16 +13,17 @@ import {
 } from "../controllers/foodVenue.controller.js";
 import {upload} from "../middlewares/multer.middlewares.js";
 import {verifyAdminJwt} from "../middlewares/admin.auth.middlewares.js";
+import {verifyJwt} from "../middlewares/userAuth.middlewares.js";
 import {authRateLimiter} from "../middlewares/ratelimit.middlewares.js";
 
 const router = Router();
 
-router.use(verifyAdminJwt);
-
+router.use(verifyJwt);
 // Public routes (no authentication required)
 router.route("/").get(getAllFoodVenues). // Get all food venues with pagination and filtering
 post(authRateLimiter, createFoodVenue); // Create new food venue (admin or business owner)
 
+// router.use(verifyAdminJwt);
 router.route("/:id").get(getFoodVenueById). // Get food venue by ID
 put(authRateLimiter, updateFoodVenue). // Update food venue details (admin or business owner)
 delete(authRateLimiter, deleteFoodVenue); // Delete food venue (admin or business owner)

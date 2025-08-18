@@ -72,7 +72,7 @@ const userSchema = new Schema({
   role: {
     type: String,
     enum: [
-      "customer", "restaurant_owner", "admin"
+      "customer", "business_owner", "admin"
     ],
     default: "customer"
   },
@@ -80,42 +80,45 @@ const userSchema = new Schema({
     type: String,
     default: "default-profile.png"
   },
-  address: {
-    country: {
-      type: String,
-      trim: true,
-      required: true
-    },
-    city: {
-      type: String,
-      trim: true,
-      required: true
-    },
-    street: {
-      type: String,
-      trim: true,
-      required: true
-    },
-    zipCode: {
-      type: String,
-      trim: true
-    },
-    coordinates: {
-      type: {
-        type: String,
-        enum: ["Point"],
-        default: "Point"
-      },
-      coordinates: {
-        type: [Number], // [longitude, latitude]
-        required: true,
-        validate: {
-          validator: coords => Array.isArray(coords) && coords.length === 2 && coords.every(c => typeof c === "number"),
-          message: "Coordinates must be an array of two numbers [longitude, latitude]."
-        }
-      }
-    }
-  },
+
+  //  Location Information
+  // address: {
+  //   country: {
+  //     type: String,
+  //     required: false,
+  //     trim: true
+  //   },
+  //   city: {
+  //     type: String,
+  //     required: false,
+  //     trim: true
+  //   },
+  //   street: {
+  //     type: String,
+  //     required: false,
+  //     trim: true
+  //   },
+  //   zipCode: {
+  //     type: String,
+  //     trim: true
+  //   },
+  //   coordinates: {
+  //     type: {
+  //       type: String,
+  //       default: "Point"
+  //     },
+  //     coordinates: {
+  //       type: [Number],
+  //       required: false,
+  //       validate: {
+  //         validator: function (coords) {
+  //           return (Array.isArray(coords) && coords.length === 2 && typeof coords[0] === "number" && typeof coords[1] === "number");
+  //         },
+  //         message: "Coordinates must be an array of [longitude, latitude]"
+  //       }
+  //     }
+  //   }
+  // },
   status: {
     type: String,
     enum: [
@@ -153,13 +156,15 @@ const userSchema = new Schema({
   savedListings: [
     {
       type: Schema.Types.ObjectId,
-      ref: "Restaurant"
+      ref: "FoodVenue"
     }
   ],
-  restaurantProfile: {
-    type: Schema.Types.ObjectId,
-    ref: "Restaurant"
-  },
+  ownedBusinesses: [
+    {
+      type: Schema.Types.ObjectId,
+      ref: "BusinessOwner"
+    }
+  ],
   twoFactorAuth: {
     isEnabled: {
       type: Boolean,
@@ -167,10 +172,10 @@ const userSchema = new Schema({
     },
     secret: String
   },
-  restaurantBooking: [
+  foodVenueBooking: [
     {
       type: Schema.Types.ObjectId,
-      ref: "RestaurantBooking"
+      ref: "FoodDelivery"
     }
   ],
   refreshToken: {

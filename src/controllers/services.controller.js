@@ -2,7 +2,7 @@ import {asyncHandler} from "../utils/asyncHandler.js";
 import {ApiError} from "../utils/ApiError.js";
 import {ApiResponse} from "../utils/ApiResponse.js";
 import {Service} from "../models/services.models.js";
-import BusinessOwner from "../models/BusinessOwner.models.js";
+import BusinessOwner from "../models/businessOwner.models.js";
 import logger from "../utils/logger.js";
 import {uploadOnCloudinary, deleteFromCloudinary} from "../utils/cloudinary.js";
 import mongoose from "mongoose";
@@ -24,6 +24,7 @@ const validateIds = {
 // @desc    Create a new service
 // @route   POST /api/services
 // @access  Private/Admin or BusinessOwner
+
 const createService = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -40,32 +41,33 @@ const createService = asyncHandler(async (req, res) => {
     "luxury_villa",
     "other"
   ];
-  
+
   try {
     const {owner, name, type, description, isAvailable} = req.body;
+    const userId = req.user._id;
 
     // Validate required fields
     if (!owner || !name || !type) {
-      throw new ApiError(400, "Owner, name, and type are required fields");
+      throw new ApiError(400, "Business owner, service name, and service type are required");
     }
 
     // Validate service type
     if (!allowedTypes.includes(type)) {
-      throw new ApiError(400, `Invalid service type. Allowed types are: ${allowedTypes.join(", ")}`);
+      throw new ApiError(400, `Invalid service type. Please choose from: ${allowedTypes.join(", ")}`);
     }
 
     validateIds.ownerId(owner);
 
-    // Check if business owner exists
-    const businessOwner = await BusinessOwner.findById(owner).session(session);
+    // Check if business owner exists and belongs to the authenticated user
+    const businessOwner = await BusinessOwner.findOne({_id: owner, user: userId}).session(session);
+
     if (!businessOwner) {
-      throw new ApiError(404, "Business owner not found");
+      throw new ApiError(404, "Business account not found or you don't have permission to access it");
     }
 
-    // Check if service with same name already exists for this owner
-    const existingService = await Service.findOne({owner, name}).session(session);
-    if (existingService) {
-      throw new ApiError(409, "Service with this name already exists for this business");
+    // Check if business owner is approved and verified
+    if (businessOwner.status !== "active" || !businessOwner.isVerified) {
+      throw new ApiError(403, "Cannot create service - the business owner account is not yet approved or verified");
     }
 
     // Create new service
@@ -73,27 +75,60 @@ const createService = asyncHandler(async (req, res) => {
       owner,
       name,
       type,
+      user: userId,
       description: description || "",
-      isAvailable: isAvailable !== false // Default to true if not specified
+      isAvailable: isAvailable !== false
     });
 
     await service.save({session});
+
+    // Add service to business owner's services array
+    await BusinessOwner.findByIdAndUpdate(owner, {
+      $addToSet: {
+        services: service._id
+      }
+    }, {session});
+
     await session.commitTransaction();
 
     const response = new ApiResponse(201, service, "Service created successfully");
-    logger.info(`Service created successfully - ID: ${service._id}, Name: ${service.name}`);
+    logger.info(`Service created - ID: ${service._id}, Name: ${service.name}`);
     return res.status(201).json(response);
   } catch (error) {
     await session.abortTransaction();
-    logger.error(`Error in createService: ${error.message}`, {stack: error.stack});
-    throw error;
+
+    // Handle duplicate name error specifically
+    if (
+      error.code === 11000 && error.keyPattern
+      ?.name) {
+      logger.warn(
+        `Duplicate service name attempt: ${req.body
+        ?.name}`);
+      throw new ApiError(409, `A service named "${req.body.name}" already exists. Please choose a different name.`);
+    }
+
+    logger.error(`Service creation failed: ${error.message}`, {
+      error: process.env.NODE_ENV === "development"
+        ? error.stack
+        : error.message,
+      ownerId: req.body
+        ?.owner,
+      serviceName: req.body
+        ?.name
+    });
+
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new ApiError(500, "We encountered an issue while creating your service. Please try again.");
   } finally {
     session.endSession();
   }
 });
-// @desc    Get all services
+
+// @desc    Get all services (filtered by owner if not admin)
 // @route   GET /api/services
-// @access  Public
+// @access  Public/Private
 const getAllServices = asyncHandler(async (req, res) => {
   try {
     const {
@@ -109,6 +144,14 @@ const getAllServices = asyncHandler(async (req, res) => {
 
     const query = {};
 
+    // If user is logged in but not admin, only show their services
+    if (req.user && !req.user.isAdmin) {
+      const businessOwners = await BusinessOwner.find({user: req.user._id}).select("_id");
+      query.owner = {
+        $in: businessOwners.map(bo => bo._id)
+      };
+    }
+
     // Filter by status if provided
     if (status) {
       if (!["active", "inactive", "pending", "rejected"].includes(status)) {
@@ -122,8 +165,10 @@ const getAllServices = asyncHandler(async (req, res) => {
       query.type = type;
     }
 
-    // Filter by owner if provided
-    if (owner) {
+    // Filter by owner if provided (admin only)
+    if (
+      owner && req.user
+      ?.isAdmin) {
       validateIds.ownerId(owner);
       query.owner = owner;
     }
@@ -161,7 +206,7 @@ const getAllServices = asyncHandler(async (req, res) => {
 
 // @desc    Get a single service by ID
 // @route   GET /api/services/:id
-// @access  Public
+// @access  Public/Private
 const getServiceById = asyncHandler(async (req, res) => {
   try {
     const {id} = req.params;
@@ -173,6 +218,14 @@ const getServiceById = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Service not found");
     }
 
+    // Check ownership if user is logged in and not admin
+    if (req.user && !req.user.isAdmin) {
+      const businessOwner = await BusinessOwner.findById(service.owner);
+      if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+        throw new ApiError(403, "You don't have permission to access this service");
+      }
+    }
+
     const response = new ApiResponse(200, service, "Service retrieved successfully");
     logger.info(`Service retrieved - ID: ${id}`);
     return res.status(200).json(response);
@@ -182,31 +235,9 @@ const getServiceById = asyncHandler(async (req, res) => {
   }
 });
 
-// @desc    Get a service by slug
-// @route   GET /api/services/slug/:slug
-// @access  Public
-const getServiceBySlug = asyncHandler(async (req, res) => {
-  try {
-    const {slug} = req.params;
-
-    const service = await Service.findOne({slug}).populate("owner");
-
-    if (!service) {
-      throw new ApiError(404, "Service not found");
-    }
-
-    const response = new ApiResponse(200, service, "Service retrieved successfully");
-    logger.info(`Service retrieved by slug - Slug: ${slug}, ID: ${service._id}`);
-    return res.status(200).json(response);
-  } catch (error) {
-    logger.error(`Error in getServiceBySlug: ${error.message}`, {stack: error.stack});
-    throw error;
-  }
-});
-
 // @desc    Update a service
 // @route   PUT /api/services/:id
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const updateService = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -220,6 +251,12 @@ const updateService = asyncHandler(async (req, res) => {
     const service = await Service.findById(id).session(session);
     if (!service) {
       throw new ApiError(404, "Service not found");
+    }
+
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to update this service");
     }
 
     // Prevent changing these fields through this endpoint
@@ -243,7 +280,7 @@ const updateService = asyncHandler(async (req, res) => {
   }
 });
 
-// @desc    Update service status
+// @desc    Update service status (Admin only)
 // @route   PATCH /api/services/:id/status
 // @access  Private/Admin
 const updateServiceStatus = asyncHandler(async (req, res) => {
@@ -255,29 +292,41 @@ const updateServiceStatus = asyncHandler(async (req, res) => {
     const {status} = req.body;
     validateIds.serviceId(id);
 
+    // Strict admin check (similar to your admin middleware)
+    if (
+      !req.admin
+      ?.isActive) {
+      throw new ApiError(403, "Only active admins can update service status");
+    }
+
     if (!["active", "inactive", "pending", "rejected"].includes(status)) {
       throw new ApiError(400, "Invalid status value");
     }
 
-    const service = await Service.findByIdAndUpdate(id, {
+    const updatedService = await Service.findByIdAndUpdate(id, {
       status
     }, {
       new: true,
       session
     });
 
-    if (!service) {
+    if (!updatedService) {
       throw new ApiError(404, "Service not found");
     }
 
     await session.commitTransaction();
 
-    const response = new ApiResponse(200, service, "Service status updated successfully");
-    logger.info(`Service status updated - ID: ${id}, New Status: ${status}`);
+    const response = new ApiResponse(200, updatedService, "Service status updated successfully by admin");
+
+    logger.info(`Admin ${req.admin._id} updated service ${id} status to ${status}`);
     return res.status(200).json(response);
   } catch (error) {
     await session.abortTransaction();
-    logger.error(`Error in updateServiceStatus: ${error.message}`, {stack: error.stack});
+    logger.error(`Admin service status update failed: ${error.message}`, {
+      adminId: req.admin
+        ?._id,
+      stack: error.stack
+    });
     throw error;
   } finally {
     session.endSession();
@@ -286,7 +335,7 @@ const updateServiceStatus = asyncHandler(async (req, res) => {
 
 // @desc    Delete a service
 // @route   DELETE /api/services/:id
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const deleteService = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -298,6 +347,12 @@ const deleteService = asyncHandler(async (req, res) => {
     const service = await Service.findById(id).session(session);
     if (!service) {
       throw new ApiError(404, "Service not found");
+    }
+
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to delete this service");
     }
 
     // Delete associated images from Cloudinary
@@ -315,6 +370,14 @@ const deleteService = asyncHandler(async (req, res) => {
 
     await Promise.all(deletionPromises);
     await Service.findByIdAndDelete(id).session(session);
+
+    // Remove service from business owner's services array
+    await BusinessOwner.findByIdAndUpdate(service.owner, {
+      $pull: {
+        services: id
+      }
+    }, {session});
+
     await session.commitTransaction();
 
     const response = new ApiResponse(200, null, "Service deleted successfully");
@@ -335,10 +398,9 @@ const validateServiceId = id => {
     throw new ApiError(400, "Invalid service ID");
   }
 };
-
 // @desc    Upload service images
 // @route   POST /api/services/:id/images
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const uploadServiceImages = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -359,6 +421,12 @@ const uploadServiceImages = asyncHandler(async (req, res) => {
     const service = await Service.findById(id).session(session);
     if (!service) {
       throw new ApiError(404, "Service not found");
+    }
+
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to upload images for this service");
     }
 
     // Check if we're exceeding the maximum number of images
@@ -409,7 +477,7 @@ const uploadServiceImages = asyncHandler(async (req, res) => {
 
 // @desc    Set primary image for a service
 // @route   PATCH /api/services/:id/images/primary
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const setPrimaryImage = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -427,6 +495,12 @@ const setPrimaryImage = asyncHandler(async (req, res) => {
     const service = await Service.findById(id).session(session);
     if (!service) {
       throw new ApiError(404, "Service not found");
+    }
+
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to modify this service");
     }
 
     if (imageIndex < 0 || imageIndex >= service.images.length) {
@@ -457,7 +531,7 @@ const setPrimaryImage = asyncHandler(async (req, res) => {
 
 // @desc    Update image caption
 // @route   PATCH /api/services/:id/images/caption
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const updateImageCaption = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -485,6 +559,12 @@ const updateImageCaption = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Service not found");
     }
 
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to modify this service");
+    }
+
     if (imageIndex < 0 || imageIndex >= service.images.length) {
       throw new ApiError(400, "Invalid image index");
     }
@@ -508,7 +588,7 @@ const updateImageCaption = asyncHandler(async (req, res) => {
 
 // @desc    Delete a service image
 // @route   DELETE /api/services/:id/images/:imageIndex
-// @access  Private/Admin or BusinessOwner
+// @access  Private/BusinessOwner
 const deleteServiceImage = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -526,6 +606,12 @@ const deleteServiceImage = asyncHandler(async (req, res) => {
     const service = await Service.findById(id).session(session);
     if (!service) {
       throw new ApiError(404, "Service not found");
+    }
+
+    // Verify ownership
+    const businessOwner = await BusinessOwner.findById(service.owner).session(session);
+    if (!businessOwner || businessOwner.user.toString() !== req.user._id.toString()) {
+      throw new ApiError(403, "You don't have permission to modify this service");
     }
 
     if (parsedIndex < 0 || parsedIndex >= service.images.length) {
@@ -572,7 +658,6 @@ export {
   createService,
   getAllServices,
   getServiceById,
-  getServiceBySlug,
   updateService,
   updateServiceStatus,
   deleteService,

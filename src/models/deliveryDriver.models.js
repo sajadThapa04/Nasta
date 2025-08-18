@@ -1,6 +1,7 @@
 import mongoose, {Schema} from "mongoose";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import mongoosePaginate from "mongoose-paginate-v2";
 
 const deliveryDriverSchema = new Schema({
   // Basic user information
@@ -126,6 +127,45 @@ const deliveryDriverSchema = new Schema({
     required: true
   },
 
+  // Location Information
+  address: {
+    country: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    city: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    street: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    zipCode: {
+      type: String,
+      trim: true
+    },
+    coordinates: {
+      type: {
+        type: String,
+        default: "Point"
+      },
+      coordinates: {
+        type: [Number],
+        required: true,
+        validate: {
+          validator: function (coords) {
+            return (Array.isArray(coords) && coords.length === 2 && typeof coords[0] === "number" && typeof coords[1] === "number");
+          },
+          message: "Coordinates must be an array of [longitude, latitude]"
+        }
+      }
+    }
+  },
+
   // Work information
   currentLocation: {
     type: {
@@ -134,14 +174,17 @@ const deliveryDriverSchema = new Schema({
       default: "Point"
     },
     coordinates: {
-      type: [Number],
-      required: true,
-      validate: {
-        validator: coords => Array.isArray(coords) && coords.length === 2 && coords.every(c => typeof c === "number"),
-        message: "Coordinates must be an array of two numbers [longitude, latitude]."
-      }
+      type: [Number], // [longitude, latitude]
+      required: true
     }
   },
+  currentAddress: {
+    country: String,
+    city: String,
+    street: String,
+    zipCode: String
+  },
+
   isAvailable: {
     type: Boolean,
     default: true,
@@ -162,7 +205,7 @@ const deliveryDriverSchema = new Schema({
     type: Number,
     min: 1,
     max: 5,
-    default: 5
+    default: null
   },
   totalDeliveries: {
     type: Number,
@@ -182,7 +225,7 @@ const deliveryDriverSchema = new Schema({
   },
   onTimePercentage: {
     type: Number,
-    default: 100,
+    default: 0,
     min: 0,
     max: 100
   },
@@ -270,12 +313,12 @@ const deliveryDriverSchema = new Schema({
 });
 
 // Indexes
-deliveryDriverSchema.index({
-  email: 1
-}, {unique: true});
-deliveryDriverSchema.index({
-  phone: 1
-}, {unique: true});
+// deliveryDriverSchema.index({
+//   email: 1
+// }, {unique: true});
+// deliveryDriverSchema.index({
+//   phone: 1
+// }, {unique: true});
 deliveryDriverSchema.index({currentLocation: "2dsphere"});
 deliveryDriverSchema.index({status: 1, isAvailable: 1, isOnDuty: 1});
 
@@ -427,6 +470,8 @@ deliveryDriverSchema.pre("save", function (next) {
   }
   next();
 });
+
+deliveryDriverSchema.plugin(mongoosePaginate);
 
 const DeliveryDriver = mongoose.model("DeliveryDriver", deliveryDriverSchema);
 export default DeliveryDriver;

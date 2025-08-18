@@ -80,7 +80,7 @@ const foodVenueReservationSchema = new Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ["cash", "card", "online", "wallet", "voucher"]
+    enum: ["cash", "card","stripe","esewa", "online", "wallet", "voucher"]
   },
   paymentDetails: {
     type: Schema.Types.Mixed // For storing payment gateway responses or other details

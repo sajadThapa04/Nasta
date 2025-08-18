@@ -610,7 +610,7 @@ const loginSocialUser = asyncHandler(async (req, res) => {
   try {
     console.log("🔐 Social login initiated");
 
-    const {provider, providerId} = req.socialUser;
+    const {provider, providerId} = req.socialUser || req.body;
     console.log("👤 Provider:", provider);
     console.log("🆔 Provider ID:", providerId);
 

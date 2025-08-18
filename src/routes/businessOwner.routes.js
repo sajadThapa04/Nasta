@@ -1,60 +1,42 @@
 import {Router} from "express";
 import {
-  createBusinessOwner,
-  getAllBusinessOwners,
-  getBusinessOwnerById,
-  getBusinessOwnerBySlug,
-  updateBusinessOwner,
-  updateBusinessOwnerStatus,
-  verifyBusinessOwner,
-  featureBusinessOwner,
-  deleteBusinessOwner,
-  getNearbyBusinessOwners,
+  createBusiness,
+  getUserBusinesses,
+  getBusinessById,
+  updateBusiness,
   uploadBusinessDocument,
-  deleteBusinessDocument,
   uploadBusinessLogo,
-  deleteBusinessLogo,
   uploadBusinessCoverPhoto,
-  deleteBusinessCoverPhoto
-} from "../controllers/businessOwner.controller.js";
+  getNearbyBusinesses,
+  getBusinessBySlug
+} from "../controllers/business.controller.js";
 import {upload} from "../middlewares/multer.middlewares.js";
-import {verifyAdminJwt} from "../middlewares/admin.auth.middlewares.js";
+import {verifyJwt} from "../middlewares/userAuth.middlewares.js";
 import {authRateLimiter} from "../middlewares/ratelimit.middlewares.js";
 
 const router = Router();
 
-router.use(verifyAdminJwt);
+// Public routes
+router.route("/nearby").get(getNearbyBusinesses); // Get nearby businesses
+router.route("/slug/:slug").get(getBusinessBySlug); // Get business by slug
 
-// Public routes (no authentication required)
-router.route("/").get(getAllBusinessOwners). // Get all business owners with pagination and filtering
-post(authRateLimiter, createBusinessOwner); // Create new business owner (admin only)
+// Protected routes (require authentication)
+router.use(verifyJwt);
 
-router.route("/nearby").get(getNearbyBusinessOwners); // Get nearby business owners
+// Business management routes
+router.route("/").post(authRateLimiter, createBusiness). // Create new business
+get(authRateLimiter, getUserBusinesses); // Get user's businesses
 
-router.route("/:id").get(getBusinessOwnerById). // Get business by ID
-put(authRateLimiter, updateBusinessOwner). // Update business details (admin only)
-delete(authRateLimiter, deleteBusinessOwner); // Delete business (admin only)
+router.route("/:id").get(authRateLimiter, getBusinessById). // Get business by ID
+put(authRateLimiter, updateBusiness); // Update business details
 
-router.route("/slug/:slug").get(getBusinessOwnerBySlug); // Get business by slug
-
-// Business status management routes (admin only)
-router.route("/:id/status").patch(authRateLimiter, updateBusinessOwnerStatus); // Update business status
-
-router.route("/:id/verify").patch(authRateLimiter, verifyBusinessOwner); // Verify business
-
-router.route("/:id/feature").patch(authRateLimiter, featureBusinessOwner); // Feature business
-
-// Document management routes (admin only)
+// Document management routes
 router.route("/:id/documents").post(authRateLimiter, upload.single("document"), uploadBusinessDocument); // Upload business document
 
-router.route("/:id/documents/:documentType").delete(authRateLimiter, deleteBusinessDocument); // Delete business document
+// Logo management routes
+router.route("/:id/logo").post(authRateLimiter, upload.single("logo"), uploadBusinessLogo); // Upload business logo
 
-// Logo management routes (admin only)
-router.route("/:id/logo").post(authRateLimiter, upload.single("logo"), uploadBusinessLogo). // Upload business logo
-delete(authRateLimiter, deleteBusinessLogo); // Delete business logo
-
-// Cover photo management routes (admin only)
-router.route("/:id/cover-photo").post(authRateLimiter, upload.single("coverPhoto"), uploadBusinessCoverPhoto). // Upload business cover photo
-delete(authRateLimiter, deleteBusinessCoverPhoto); // Delete business cover photo
+// Cover photo management routes
+router.route("/:id/cover-photo").post(authRateLimiter, upload.single("coverPhoto"), uploadBusinessCoverPhoto); // Upload business cover photo
 
 export default router;

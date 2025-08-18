@@ -1,6 +1,86 @@
 import mongoose, {Schema} from "mongoose";
 import mongoosePaginate from "mongoose-paginate-v2";
 
+const DistanceRateSchema = new mongoose.Schema({
+  minDistance: {
+    type: Number,
+    required: true
+  },
+  maxDistance: {
+    type: Number,
+    required: true
+  },
+  rate: {
+    type: Number,
+    required: true
+  }
+});
+
+const SurgeMultiplierSchema = new mongoose.Schema({
+  startTime: {
+    type: String,
+    required: true
+  },
+  endTime: {
+    type: String,
+    required: true
+  },
+  multiplier: {
+    type: Number,
+    required: true
+  }
+});
+
+const ZoneFeeSchema = new mongoose.Schema({
+  zoneName: {
+    type: String,
+    required: true
+  },
+  fee: {
+    type: Number,
+    required: true
+  }
+});
+
+const DeliveryFeeSchema = new mongoose.Schema({
+  base: {
+    type: Number,
+    default: 5
+  },
+  distanceRates: {
+    type: [DistanceRateSchema],
+    default: []
+  },
+  surgeMultipliers: {
+    type: [SurgeMultiplierSchema], // Changed from [Number] to [SurgeMultiplierSchema]
+    default: []
+  },
+  smallOrderThreshold: {
+    type: Number,
+    default: 15
+  },
+  smallOrderFee: {
+    type: Number,
+    default: 2
+  },
+  serviceFeePercentage: {
+    type: Number,
+    default: 10
+  },
+  handlingFee: {
+    type: Number,
+    default: 1
+  },
+  zoneFees: {
+    type: [ZoneFeeSchema], // Changed from [Number] to [ZoneFeeSchema]
+    default: []
+  },
+  currency: {
+    type: String,
+    default: "USD"
+  }
+});
+
 const foodVenueSchema = new Schema({
   // Reference to the Service (like the brand or owner service)
   service: {
@@ -14,6 +94,7 @@ const foodVenueSchema = new Schema({
   name: {
     type: String,
     trim: true,
+    unique: true,
     maxlength: [
       100, "Venue name cannot exceed 100 characters."
     ],
@@ -75,11 +156,13 @@ const foodVenueSchema = new Schema({
 
   // Amenities such as WiFi, AC, Parking, etc.
   amenities: {
-    type: [{
-      type: String,
-      trim: true,
-      lowercase: true
-    }],
+    type: [
+      {
+        type: String,
+        trim: true,
+        lowercase: true
+      }
+    ],
     default: []
   },
 
@@ -104,10 +187,14 @@ const foodVenueSchema = new Schema({
           openingTime: {
             type: String,
             required: true,
-            match: [/^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/, "Opening time must be in HH:mm format."],
+            match: [
+              /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/, "Opening time must be in HH:mm format."
+            ],
             validate: {
-              validator: function(value) {
-                if (!this.closingTime) return true;
+              validator: function (value) {
+                if (!this.closingTime) 
+                  return true;
+                
                 // Handle overnight cases (e.g., 22:00 to 02:00)
                 if (value > this.closingTime) {
                   return true; // Considered valid (overnight)
@@ -136,9 +223,7 @@ const foodVenueSchema = new Schema({
         required: [
           true, "Menu item name is required."
         ],
-        minlength: [
-          2, "Menu item name must have at least 2 characters."
-        ]
+        minlength: [2, "Menu item name must have at least 2 characters."]
         // Removed lowercase to preserve original casing
       },
       price: {
@@ -148,12 +233,15 @@ const foodVenueSchema = new Schema({
         ],
         min: [0, "Price cannot be negative."]
       },
-      images: { // Changed from single image to array
-        type: [{
-          type: String,
-          trim: true,
-          match: [/^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))$/i, "Image URL must be valid and end with png, jpg, jpeg, gif, or webp."]
-        }],
+      images: {
+        // Changed from single image to array
+        type: [
+          {
+            type: String,
+            trim: true,
+            match: [/^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))$/i, "Image URL must be valid and end with png, jpg, jpeg, gif, or webp."]
+          }
+        ],
         default: []
       }
     }
@@ -161,14 +249,26 @@ const foodVenueSchema = new Schema({
 
   // Venue images (exterior, interior, etc.)
   images: {
-    type: [{
-      type: String,
-      trim: true,
-      match: [/^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))$/i, "Image URL must be valid and end with png, jpg, jpeg, gif, or webp."]
-    }],
+    type: [
+      {
+        type: String,
+        trim: true,
+        match: [/^(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))$/i, "Image URL must be valid and end with png, jpg, jpeg, gif, or webp."]
+      }
+    ],
     default: []
   },
 
+  // In your FoodVenue schema, add this deliveryFee configuration
+  deliveryFee: {
+    type: DeliveryFeeSchema,
+    default: () => ({})
+  },
+  deliveryRadius: {
+    type: Number, // in kilometers
+    required: true,
+    default: 10
+  },
   // Availability status (open for bookings/orders)
   isAvailable: {
     type: Boolean,
@@ -187,7 +287,6 @@ foodVenueSchema.virtual("serviceDetails", {
   foreignField: "_id",
   justOne: true
 });
-
 
 // Add pagination plugin
 foodVenueSchema.plugin(mongoosePaginate);

@@ -1,19 +1,19 @@
 import mongoose, {Schema} from "mongoose";
 import mongoosePaginate from "mongoose-paginate-v2";
 
-const businessOwnerSchema = new Schema({
+const BusinessOwnerSchema = new Schema({
   // Reference to the User model (assuming you have one)
-  //   user: {
-  //     type: Schema.Types.ObjectId,
-  //     ref: "User",
-  //     required: true,
-  //     unique: true
-  //   },
+  user: {
+    type: Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+    unique: true
+  },
 
   admin: {
     type: Schema.Types.ObjectId,
-    ref: "Admin",
-    required: true
+    ref: "Admin"
+    // required: true
   },
   // Business Information
   businessName: {
@@ -255,13 +255,13 @@ const businessOwnerSchema = new Schema({
 }, {timestamps: true});
 
 // Indexes
-businessOwnerSchema.index({"address.coordinates": "2dsphere"});
-// businessOwnerSchema.index({businessSlug: 1});
-// businessOwnerSchema.index({status: 1});
-// businessOwnerSchema.index({businessType: 1});
+BusinessOwnerSchema.index({"address.coordinates": "2dsphere"});
+// BusinessOwnerSchema.index({businessSlug: 1});
+// BusinessOwnerSchema.index({status: 1});
+// BusinessOwnerSchema.index({businessType: 1});
 
 // Pre-save hook to generate slug
-businessOwnerSchema.pre("save", function (next) {
+BusinessOwnerSchema.pre("save", function (next) {
   if (this.businessName && !this.businessSlug) {
     this.businessSlug = this.businessName.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^\w\-]+/g, "");
   }
@@ -269,8 +269,8 @@ businessOwnerSchema.pre("save", function (next) {
 });
 
 // Add pagination plugin
-businessOwnerSchema.plugin(mongoosePaginate);
+BusinessOwnerSchema.plugin(mongoosePaginate);
 
-const BusinessOwner = mongoose.model("BusinessOwner", businessOwnerSchema);
+const BusinessOwner = mongoose.model("BusinessOwner", BusinessOwnerSchema);
 
 export default BusinessOwner;

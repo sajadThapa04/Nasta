@@ -9,6 +9,11 @@ const serviceSchema = new Schema({
     required: true,
     index: true
   },
+  user: {
+    type: Schema.Types.ObjectId,
+    ref: "User",
+    index: true
+  },
 
   name: {
     type: String,

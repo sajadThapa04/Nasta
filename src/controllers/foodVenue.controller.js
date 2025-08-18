@@ -4,8 +4,10 @@ import {ApiResponse} from "../utils/ApiResponse.js";
 import FoodVenue from "../models/foodVenue.models.js";
 import {uploadOnCloudinary, deleteFromCloudinary} from "../utils/cloudinary.js";
 import {Service} from "../models/services.models.js";
+import BusinessOwner from "../models/businessOwner.models.js";
 import logger from "../utils/logger.js";
 import mongoose from "mongoose";
+import geocodeCoordinates from "../utils/geoCordinates.js";
 
 // Helper functions to validate IDs
 const validateIds = {
@@ -21,9 +23,117 @@ const validateIds = {
   }
 };
 
+// Helper function to verify ownership
+const verifyOwnership = async (venueId, userId, session = null) => {
+  const query = FoodVenue.findById(venueId).populate({
+    path: "service",
+    populate: {
+      path: "owner",
+      model: "BusinessOwner"
+    }
+  });
+
+  if (session) {
+    query.session(session);
+  }
+
+  const foodVenue = await query;
+
+  if (!foodVenue) {
+    throw new ApiError(404, "Food venue not found");
+  }
+
+  if (
+    !foodVenue.service
+    ?.owner || foodVenue.service.owner.user.toString() !== userId.toString()) {
+    throw new ApiError(403, "You don't have permission to access this food venue");
+  }
+
+  return foodVenue;
+};
+
+// Helper function to validate delivery fee configuration
+const validateDeliveryFee = deliveryFee => {
+  if (!deliveryFee) 
+    return null;
+  
+  const errors = [];
+
+  // Validate base fee
+  if (deliveryFee.base === undefined || typeof deliveryFee.base !== "number" || deliveryFee.base < 0) {
+    errors.push("Base delivery fee must be a non-negative number");
+  }
+
+  // Validate distance rates
+  if (deliveryFee.distanceRates && Array.isArray(deliveryFee.distanceRates)) {
+    deliveryFee.distanceRates.forEach((rate, index) => {
+      console.log(`Validating distance rate at index ${index}:`, JSON.stringify(rate));
+      if (rate.minDistance === undefined || rate.maxDistance === undefined || rate.rate === undefined) {
+        errors.push(`Distance rate at index ${index} is missing required fields`);
+      } else if (typeof rate.minDistance !== "number" || typeof rate.maxDistance !== "number" || typeof rate.rate !== "number") {
+        errors.push(`Distance rate at index ${index} has invalid field types`);
+      } else if (rate.minDistance < 0) {
+        errors.push(`Distance rate at index ${index} has negative minDistance`);
+      } else if (rate.maxDistance <= rate.minDistance) {
+        errors.push(`Distance rate at index ${index} has maxDistance not greater than minDistance`);
+      } else if (rate.rate < 0) {
+        errors.push(`Distance rate at index ${index} has negative rate`);
+      }
+    });
+  }
+
+  // Validate surge multipliers
+  if (deliveryFee.surgeMultipliers && Array.isArray(deliveryFee.surgeMultipliers)) {
+    deliveryFee.surgeMultipliers.forEach((surge, index) => {
+      if (!surge.startTime || !surge.endTime || !surge.multiplier || surge.multiplier < 1) {
+        errors.push(`Surge multiplier at index ${index} is invalid`);
+      }
+    });
+  }
+
+  // Validate small order configuration
+  if (deliveryFee.smallOrderThreshold !== undefined && (typeof deliveryFee.smallOrderThreshold !== "number" || deliveryFee.smallOrderThreshold < 0)) {
+    errors.push("Small order threshold must be a non-negative number");
+  }
+
+  if (deliveryFee.smallOrderFee !== undefined && (typeof deliveryFee.smallOrderFee !== "number" || deliveryFee.smallOrderFee < 0)) {
+    errors.push("Small order fee must be a non-negative number");
+  }
+
+  // Validate service fee
+  if (deliveryFee.serviceFeePercentage !== undefined && (typeof deliveryFee.serviceFeePercentage !== "number" || deliveryFee.serviceFeePercentage < 0 || deliveryFee.serviceFeePercentage > 100)) {
+    errors.push("Service fee percentage must be between 0 and 100");
+  }
+
+  // Validate handling fee
+  if (deliveryFee.handlingFee !== undefined && (typeof deliveryFee.handlingFee !== "number" || deliveryFee.handlingFee < 0)) {
+    errors.push("Handling fee must be a non-negative number");
+  }
+
+  // Validate zone fees
+  if (deliveryFee.zoneFees && Array.isArray(deliveryFee.zoneFees)) {
+    deliveryFee.zoneFees.forEach((zone, index) => {
+      if (!zone.zoneName || zone.fee === undefined || zone.fee < 0) {
+        errors.push(`Zone fee at index ${index} is invalid`);
+      }
+    });
+  }
+
+  // Validate currency
+  if (deliveryFee.currency && !/^[A-Z]{3}$/.test(deliveryFee.currency)) {
+    errors.push("Currency must be a valid 3-letter ISO code");
+  }
+
+  if (errors.length > 0) {
+    throw new ApiError(400, `Invalid delivery fee configuration: ${errors.join(", ")}`);
+  }
+
+  return true;
+};
+
 // @desc    Create a new food venue
 // @route   POST /api/food-venues
-// @access  Private/Admin or Private/BusinessOwner
+// @access  Private/BusinessOwner
 const createFoodVenue = asyncHandler(async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -33,27 +143,75 @@ const createFoodVenue = asyncHandler(async (req, res) => {
       service,
       name,
       description,
-      address,
+      coordinates,
       seatingCapacity,
       amenities,
       openingHours,
       menuItems,
-      isAvailable
+      isAvailable,
+      deliveryFee,
+      deliveryRadius
     } = req.body;
 
+    const userId = req.user._id;
+
     // Check required fields
-    if (!service || !name || !address || seatingCapacity === undefined) {
-      throw new ApiError(400, "Service reference, name, address, and seating capacity are required");
+    if (!service || !name || !coordinates || seatingCapacity === undefined) {
+      throw new ApiError(400, "Service reference, name, coordinates, and seating capacity are required");
     }
 
-    // Validate address structure
-    if (!address.country || !address.city || !address.street || !address.coordinates) {
-      throw new ApiError(400, "Address must include country, city, street, and coordinates");
+    // Validate service ID and check ownership
+    validateIds.serviceId(service);
+    const serviceRecord = await Service.findById(service).session(session);
+
+    if (!serviceRecord) {
+      throw new ApiError(404, "Service not found");
+    }
+
+    if (serviceRecord.status !== "active") {
+      throw new ApiError(403, `Cannot create food venue - Service status is ${serviceRecord.status}. Only active services can have food venues.`);
+    }
+
+    // Verify the user owns the service through the business owner
+    const businessOwner = await BusinessOwner.findOne({_id: serviceRecord.owner, user: userId}).session(session);
+
+    if (!businessOwner) {
+      throw new ApiError(403, "You don't have permission to create venues for this service");
     }
 
     // Validate coordinates
-    if (!Array.isArray(address.coordinates.coordinates) || address.coordinates.coordinates.length !== 2 || typeof address.coordinates.coordinates[0] !== "number" || typeof address.coordinates.coordinates[1] !== "number") {
+    if (!Array.isArray(coordinates) || coordinates.length !== 2 || !coordinates.every(coord => typeof coord === "number")) {
       throw new ApiError(400, "Coordinates must be an array of two numbers [longitude, latitude]");
+    }
+
+    const [longitude, latitude] = coordinates;
+    if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+      throw new ApiError(400, "Invalid coordinates. Longitude must be between -180 and 180, and latitude must be between -90 and 90");
+    }
+
+    // Geocode coordinates to get address details
+    const geocodedAddress = await geocodeCoordinates(coordinates);
+    if (!geocodedAddress) {
+      throw new ApiError(500, "Failed to determine address from coordinates");
+    }
+
+    // Check for duplicate venue name under the same service
+    const existingVenueName = await FoodVenue.findOne({
+      service,
+      name: {
+        $regex: new RegExp(`^${name}$`, "i")
+      }
+    }).session(session);
+
+    if (existingVenueName) {
+      throw new ApiError(409, `A food venue with the name "${name}" already exists for this service. Please choose a different name.`);
+    }
+
+    // Check for existing venue at the same address (using coordinates)
+    const existingVenueAtAddress = await FoodVenue.findOne({"address.coordinates.coordinates": coordinates}).session(session);
+
+    if (existingVenueAtAddress) {
+      throw new ApiError(409, `A food venue already exists at this address (${geocodedAddress.street}, ${geocodedAddress.city}).`);
     }
 
     // Validate seating capacity
@@ -61,6 +219,23 @@ const createFoodVenue = asyncHandler(async (req, res) => {
       throw new ApiError(400, "Seating capacity must be at least 1");
     }
 
+    // Validate delivery radius
+    if (deliveryRadius !== undefined && (typeof deliveryRadius !== "number" || deliveryRadius <= 0)) {
+      throw new ApiError(400, "Delivery radius must be a positive number");
+    }
+
+    // Validate delivery fee configuration if provided
+    if (deliveryFee) {
+      // Ensure distance rates are numbers
+      if (deliveryFee.distanceRates && Array.isArray(deliveryFee.distanceRates)) {
+        deliveryFee.distanceRates = deliveryFee.distanceRates.map(rate => ({
+          minDistance: Number(rate.minDistance),
+          maxDistance: Number(rate.maxDistance),
+          rate: Number(rate.rate)
+        }));
+      }
+      validateDeliveryFee(deliveryFee);
+    }
     // Validate opening hours if provided
     if (openingHours && Array.isArray(openingHours)) {
       for (const daySchedule of openingHours) {
@@ -114,16 +289,42 @@ const createFoodVenue = asyncHandler(async (req, res) => {
       }
     }
 
-    // Create new food venue
+    // Create default delivery fee configuration if not provided
+    const defaultDeliveryFee = {
+      base: 5,
+      distanceRates: [],
+      surgeMultipliers: [],
+      smallOrderThreshold: 15,
+      smallOrderFee: 2,
+      serviceFeePercentage: 10,
+      handlingFee: 1,
+      zoneFees: [],
+      currency: "USD"
+    };
+
+    // Create new food venue with all fields
     const foodVenue = new FoodVenue({
       service,
       name,
       description: description || "",
-      address,
+      address: {
+        country: geocodedAddress.country,
+        city: geocodedAddress.city,
+        street: geocodedAddress.street,
+        zipCode: geocodedAddress.zipCode,
+        coordinates: {
+          type: "Point",
+          coordinates: coordinates
+        }
+      },
       seatingCapacity,
       amenities: amenities || [],
       openingHours: openingHours || [],
       menuItems: menuItems || [],
+      deliveryFee: deliveryFee || defaultDeliveryFee,
+      deliveryRadius: deliveryRadius !== undefined
+        ? deliveryRadius
+        : 10,
       isAvailable: isAvailable !== undefined
         ? isAvailable
         : true
@@ -134,11 +335,18 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
     const response = new ApiResponse(201, foodVenue, "Food venue created successfully");
     logger.info(`Food venue created successfully - ID: ${foodVenue._id}, Name: ${foodVenue.name}, Service: ${foodVenue.service}`);
-    logger.debug(`Food venue details: ${JSON.stringify({seatingCapacity: foodVenue.seatingCapacity, amenities: foodVenue.amenities.length, menuItems: foodVenue.menuItems.length})}`);
+    logger.debug(`Food venue details: ${JSON.stringify({seatingCapacity: foodVenue.seatingCapacity, amenities: foodVenue.amenities.length, menuItems: foodVenue.menuItems.length, deliveryRadius: foodVenue.deliveryRadius, deliveryFee: foodVenue.deliveryFee})}`);
+
       return res.status(201).json(response);
     } catch (error) {
       await session.abortTransaction();
       logger.error(`Error in createFoodVenue: ${error.message}`, {stack: error.stack});
+
+      if (
+        error.code === 11000 && error.keyPattern
+        ?.name) {
+        throw new ApiError(409, `A food venue with the name "${req.body.name}" already exists. Please choose a different name.`);
+      }
 
       if (error instanceof mongoose.Error.ValidationError) {
         const messages = Object.values(error.errors).map(err => err.message);
@@ -155,9 +363,9 @@ const createFoodVenue = asyncHandler(async (req, res) => {
     }
   });
 
-  // @desc    Get all food venues
+  // @desc    Get all food venues (filtered by ownership if not admin)
   // @route   GET /api/food-venues
-  // @access  Public
+  // @access  Public/Private
   const getAllFoodVenues = asyncHandler(async (req, res) => {
     try {
       const {
@@ -174,12 +382,43 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
       const query = {};
 
+      // If user is logged in but not admin, only show their venues
+      if (req.user && !req.user.isAdmin) {
+        // Find all services owned by this user
+        const businessOwners = await BusinessOwner.find({user: req.user._id}).select("_id");
+        const services = await Service.find({
+          owner: {
+            $in: businessOwners.map(bo => bo._id)
+          }
+        }).select("_id");
+        query.service = {
+          $in: services.map(s => s._id)
+        };
+      }
+
+      // Filter by specific service if provided (and user has access)
       if (service) {
         validateIds.serviceId(service);
+
+        // For non-admin users, verify they own this service
+        if (req.user && !req.user.isAdmin) {
+          const serviceRecord = await Service.findById(service);
+          if (!serviceRecord) {
+            throw new ApiError(404, "Service not found");
+          }
+
+          const businessOwner = await BusinessOwner.findOne({_id: serviceRecord.owner, user: req.user._id});
+
+          if (!businessOwner) {
+            throw new ApiError(403, "You don't have permission to access venues for this service");
+          }
+        }
+
         query.service = service;
         logger.debug(`Filtering by service ID: ${service}`);
       }
 
+      // Search by name if search query is provided
       if (search) {
         query.name = {
           $regex: search,
@@ -188,6 +427,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
         logger.debug(`Searching for venues with name containing: ${search}`);
       }
 
+      // Geospatial query if coordinates are provided
       if (longitude && latitude) {
         query["address.coordinates"] = {
           $near: {
@@ -227,13 +467,24 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
   // @desc    Get a single food venue by ID
   // @route   GET /api/food-venues/:id
-  // @access  Public
+  // @access  Public/Private
   const getFoodVenueById = asyncHandler(async (req, res) => {
     try {
       const {id} = req.params;
       validateIds.venueId(id);
 
-      const foodVenue = await FoodVenue.findById(id).populate("service");
+      // For non-admin users, verify ownership
+      if (req.user && !req.user.isAdmin) {
+        await verifyOwnership(id, req.user._id);
+      }
+
+      const foodVenue = await FoodVenue.findById(id).populate({
+        path: "service",
+        populate: {
+          path: "owner",
+          model: "BusinessOwner"
+        }
+      });
 
       if (!foodVenue) {
         throw new ApiError(404, "Food venue not found");
@@ -250,8 +501,8 @@ const createFoodVenue = asyncHandler(async (req, res) => {
     });
 
     // @desc    Update a food venue
-    // @route   PUT /api/food-venues/:id
-    // @access  Private/Admin or BusinessOwner
+    // @route   PATCH /api/food-venues/:id
+    // @access  Private/BusinessOwner
     const updateFoodVenue = asyncHandler(async (req, res) => {
       const session = await mongoose.startSession();
       session.startTransaction();
@@ -261,13 +512,16 @@ const createFoodVenue = asyncHandler(async (req, res) => {
         const updateData = req.body;
         validateIds.venueId(id);
 
-        const foodVenue = await FoodVenue.findById(id).session(session);
-        if (!foodVenue) {
-          throw new ApiError(404, "Food venue not found");
-        }
+        // Verify ownership and get the food venue
+        const foodVenue = await verifyOwnership(id, req.user._id, session);
 
-        const restrictedFields = ["service", "images", "menuItems"];
-        restrictedFields.forEach(field => delete updateData[field]);
+        // Prevent changing certain fields
+        const restrictedFields = ["service", "address.coordinates"];
+        restrictedFields.forEach(field => {
+          if (updateData[field]) {
+            throw new ApiError(400, `Cannot modify ${field} through this endpoint`);
+          }
+        });
 
         if (
           updateData.address
@@ -277,13 +531,30 @@ const createFoodVenue = asyncHandler(async (req, res) => {
           }
         }
 
+        // Validate delivery radius if being updated
+        if (updateData.deliveryRadius !== undefined) {
+          if (typeof updateData.deliveryRadius !== "number" || updateData.deliveryRadius <= 0) {
+            throw new ApiError(400, "Delivery radius must be a positive number");
+          }
+        }
+
+        // Validate delivery fee configuration if being updated
+        if (updateData.deliveryFee) {
+          validateDeliveryFee(updateData.deliveryFee);
+        }
+
+        // Keep track of original values for logging
         const originalValues = {
           name: foodVenue.name,
           seatingCapacity: foodVenue.seatingCapacity,
-          isAvailable: foodVenue.isAvailable
+          isAvailable: foodVenue.isAvailable,
+          deliveryRadius: foodVenue.deliveryRadius,
+          deliveryFee: foodVenue.deliveryFee
         };
 
+        // Apply updates
         Object.assign(foodVenue, updateData);
+
         await foodVenue.save({session});
         await session.commitTransaction();
 
@@ -294,13 +565,26 @@ const createFoodVenue = asyncHandler(async (req, res) => {
           after: {
             name: foodVenue.name,
             seatingCapacity: foodVenue.seatingCapacity,
-            isAvailable: foodVenue.isAvailable}
+            isAvailable: foodVenue.isAvailable,
+            deliveryRadius: foodVenue.deliveryRadius,
+            deliveryFee: foodVenue.deliveryFee}
       })}`);
+
             return res.status(200).json(response);
           } catch (error) {
             await session.abortTransaction();
             logger.error(`Error in updateFoodVenue: ${error.message}`, {stack: error.stack});
-            throw error;
+
+            if (error instanceof mongoose.Error.ValidationError) {
+              const messages = Object.values(error.errors).map(err => err.message);
+              throw new ApiError(400, `Validation error: ${messages.join(", ")}`);
+            }
+
+            if (error instanceof ApiError) {
+              throw error;
+            }
+
+            throw new ApiError(500, "Failed to update food venue due to an unexpected error");
           } finally {
             session.endSession();
           }
@@ -308,7 +592,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
         // @desc    Update food venue availability
         // @route   PATCH /api/food-venues/:id/availability
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const updateFoodVenueAvailability = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
@@ -321,6 +605,9 @@ const createFoodVenue = asyncHandler(async (req, res) => {
             if (typeof isAvailable !== "boolean") {
               throw new ApiError(400, "isAvailable must be a boolean");
             }
+
+            // Verify ownership
+            await verifyOwnership(id, req.user._id, session);
 
             const foodVenue = await FoodVenue.findByIdAndUpdate(id, {
               isAvailable
@@ -349,7 +636,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
         // @desc    Delete a food venue
         // @route   DELETE /api/food-venues/:id
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const deleteFoodVenue = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
@@ -358,10 +645,8 @@ const createFoodVenue = asyncHandler(async (req, res) => {
             const {id} = req.params;
             validateIds.venueId(id);
 
-            const foodVenue = await FoodVenue.findById(id).session(session);
-            if (!foodVenue) {
-              throw new ApiError(404, "Food venue not found");
-            }
+            // Verify ownership and get the food venue
+            const foodVenue = await verifyOwnership(id, req.user._id, session);
 
             const deletionPromises = [];
 
@@ -406,16 +691,9 @@ const createFoodVenue = asyncHandler(async (req, res) => {
           }
         });
 
-        // Helper function to validate venue ID
-        const validateVenueId = id => {
-          if (!mongoose.Types.ObjectId.isValid(id)) {
-            throw new ApiError(400, "Invalid food venue ID");
-          }
-        };
-
         // @desc    Upload venue images
         // @route   POST /api/food-venues/:id/images
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const uploadVenueImages = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
@@ -427,16 +705,14 @@ const createFoodVenue = asyncHandler(async (req, res) => {
               captions = []
             } = req.body;
 
-            validateVenueId(id);
+            validateIds.venueId(id);
 
             if (!files || files.length === 0) {
               throw new ApiError(400, "At least one image file is required");
             }
 
-            const foodVenue = await FoodVenue.findById(id).session(session);
-            if (!foodVenue) {
-              throw new ApiError(404, "Food venue not found");
-            }
+            // Verify ownership and get the food venue
+            const foodVenue = await verifyOwnership(id, req.user._id, session);
 
             const uploadPromises = files.map((file, index) => {
               return uploadOnCloudinary(file.path, "venue_images").then(result => {
@@ -469,23 +745,21 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
         // @desc    Delete a venue image
         // @route   DELETE /api/food-venues/:id/images/:imageUrl
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const deleteVenueImage = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
 
           try {
             const {id, imageUrl} = req.params;
-            validateVenueId(id);
+            validateIds.venueId(id);
 
             if (!imageUrl) {
               throw new ApiError(400, "Image URL is required");
             }
 
-            const foodVenue = await FoodVenue.findById(id).session(session);
-            if (!foodVenue) {
-              throw new ApiError(404, "Food venue not found");
-            }
+            // Verify ownership and get the food venue
+            const foodVenue = await verifyOwnership(id, req.user._id, session);
 
             const imageIndex = foodVenue.images.findIndex(img => img === imageUrl);
             if (imageIndex === -1) {
@@ -520,7 +794,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
         // @desc    Add menu item images
         // @route   POST /api/food-venues/:id/menu-items/:menuItemId/images
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const uploadMenuItemImages = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
@@ -528,7 +802,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
           try {
             const {id, menuItemId} = req.params;
             const files = req.files || [];
-            validateVenueId(id);
+            validateIds.venueId(id);
 
             if (!mongoose.Types.ObjectId.isValid(menuItemId)) {
               throw new ApiError(400, "Invalid menu item ID");
@@ -538,10 +812,8 @@ const createFoodVenue = asyncHandler(async (req, res) => {
               throw new ApiError(400, "At least one image file is required");
             }
 
-            const foodVenue = await FoodVenue.findById(id).session(session);
-            if (!foodVenue) {
-              throw new ApiError(404, "Food venue not found");
-            }
+            // Verify ownership and get the food venue
+            const foodVenue = await verifyOwnership(id, req.user._id, session);
 
             const menuItem = foodVenue.menuItems.id(menuItemId);
             if (!menuItem) {
@@ -579,7 +851,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
 
         // @desc    Delete a menu item image
         // @route   DELETE /api/food-venues/:id/menu-items/:menuItemId/images/:imageUrl
-        // @access  Private/Admin or BusinessOwner
+        // @access  Private/BusinessOwner
         const deleteMenuItemImage = asyncHandler(async (req, res) => {
           const session = await mongoose.startSession();
           session.startTransaction();
@@ -588,7 +860,7 @@ const createFoodVenue = asyncHandler(async (req, res) => {
             const {id, menuItemId} = req.params;
             const {imageUrl} = req.body;
 
-            validateVenueId(id);
+            validateIds.venueId(id);
 
             if (!mongoose.Types.ObjectId.isValid(menuItemId)) {
               throw new ApiError(400, "Invalid menu item ID");
@@ -598,10 +870,8 @@ const createFoodVenue = asyncHandler(async (req, res) => {
               throw new ApiError(400, "Image URL is required in request body");
             }
 
-            const foodVenue = await FoodVenue.findById(id).session(session);
-            if (!foodVenue) {
-              throw new ApiError(404, "Food venue not found");
-            }
+            // Verify ownership and get the food venue
+            const foodVenue = await verifyOwnership(id, req.user._id, session);
 
             const menuItem = foodVenue.menuItems.id(menuItemId);
             if (!menuItem) {
